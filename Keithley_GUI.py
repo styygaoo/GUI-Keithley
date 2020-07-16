@@ -8,13 +8,22 @@ Created on Wed May 13 15:08:33 2020
 import tkinter as tk
 from tkinter import ttk, messagebox
 import serial
+import matplotlib.pyplot as plt
 import sys
 import glob
 import pandas as pd
+import numpy as np
+from os.path import basename
+import csv
 from time import sleep
 import time
 import datetime
 import re
+import threading
+import queue
+
+
+
 re_datetime  = re.compile("^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[1-2][0-9]|3[0-1]) (2[0-3]|[01][0-9]):[0-5][0-9]:[0-5][0-9]$")
 re_timestamp = re.compile("^([0-9]{1,4}):[0-5][0-9]:[0-5][0-9]$")
 
@@ -26,6 +35,13 @@ class Keithley_gui():
     def __init__(self, parent):
         self.parent = parent
         self.parent.title('Keithley')
+        self.thread_queue = queue.Queue()
+        
+        self.filenames = []
+        self.Mpps = []
+        self.mpp = 0
+        self.zeit = 0
+        
     
     def gui_connect(self):
         availablePorts = self.serial_ports()
@@ -156,13 +172,14 @@ class Keithley_gui():
             if self.serial_object:
                 if self.serial_object.is_open:
                     self.serial_object.close()
+            pass
         except:
-            print("Error: serial object close")
+            print("serial object did't exist")
+            pass
+        
         self.parent.destroy()
     
-    
-    
-    
+
     def button_click():
         pass
 
@@ -171,13 +188,15 @@ class Keithley_gui():
     def able_buttons(self, state="connect"):
         if state == "connect":
             self.connect_button.config(state="disable")
+            self.disconnect_button.config(state="normal")
             self.port_box_refresh_button.config(state="disable")
-            self.quitgui_button.config(state="disable")
+            self.quitgui_button.config(state="normal")
             self.disconnect_button.config(state="normal")
             self.send_button.config(state="normal")
             self.clear_button.config(state="normal")
             self.smartsweepbestaetigen_Button.config(state="normal")
             self.starttimer_button.config(state="normal")
+            self.send_button.config(state="normal")
     
     
     
@@ -191,6 +210,8 @@ class Keithley_gui():
             self.quitgui_button.config(state="normal")
             self.smartsweepbestaetigen_Button.config(state="disable")
             self.starttimer_button.config(state="disable")
+            self.send_button.config(state="disable")
+            
             
     def gui_globalsettings(self):
         
@@ -198,7 +219,7 @@ class Keithley_gui():
         frame_globalsettings.pack(side='top', fill='x')  # Scan send ON OFF    
             #scan und send -  frame_1
 
-        self.send_button = tk.Button(master=frame_globalsettings, text = "send", width = 10, command = self.action_send)
+        self.send_button = tk.Button(master=frame_globalsettings, text = "send", state="disable",width = 10, command = self.action_send)
         self.send_button.pack(side='left', padx='5', pady='5')
 
         self.data_entry = tk.Entry(master=frame_globalsettings)
@@ -304,22 +325,31 @@ class Keithley_gui():
     
         self.smartsweepvoltagerange_entry = tk.Entry(master=frame_sweepconfig1, width=6)
         self.smartsweepvoltagerange_entry.pack(side='left', padx='5', pady='5')
-        self.smartsweepvoltagerange_entry.insert(0, "2")
+        self.smartsweepvoltagerange_entry.insert(0, "40")
     
         smartsweepcurrentrange_label = tk.Label(master=frame_sweepconfig1, text = "Imax [A]")
         smartsweepcurrentrange_label.pack(side='left', padx='5', pady='5')
     
         self.smartsweepcurrentrange_entry = tk.Entry(master=frame_sweepconfig1, width=6)
         self.smartsweepcurrentrange_entry.pack(side='left', padx='5', pady='5')
-        self.smartsweepcurrentrange_entry.insert(0, "1")
+        self.smartsweepcurrentrange_entry.insert(0, "5")
     
     
-        smartsweepcurrentlimit_label = tk.Label(master=frame_sweepconfig1, text = "Imin [A]")
+        smartsweepcurrentlimit_label = tk.Label(master=frame_sweepconfig1, text = "I_limit [A]")
         smartsweepcurrentlimit_label.pack(side='left', padx='5', pady='5')
     
         self.smartsweepcurrentlimit_entry = tk.Entry(master=frame_sweepconfig1, width=6)
         self.smartsweepcurrentlimit_entry.pack(side='left', padx='5', pady='5')
-        self.smartsweepcurrentlimit_entry.insert(0, "1")
+        self.smartsweepcurrentlimit_entry.insert(0, "5")
+    
+    
+        smartsweepshortcircutcurrent_label = tk.Label(master=frame_sweepconfig1, text = "Isc [A]")
+        smartsweepshortcircutcurrent_label.pack(side='left', padx='5', pady='5')
+    
+        self.smartsweepshortcircutcurrent_entry = tk.Entry(master=frame_sweepconfig1, width=6)
+        self.smartsweepshortcircutcurrent_entry.pack(side='left', padx='5', pady='5')
+        self.smartsweepshortcircutcurrent_entry.insert(0, "9")
+    
     
     
     
@@ -341,7 +371,7 @@ class Keithley_gui():
     
         self.smartsweepvoltageend_entry = tk.Entry(master=frame_sweepconfig2, width=6)
         self.smartsweepvoltageend_entry.pack(side='left', padx='5', pady='5')
-        self.smartsweepvoltageend_entry.insert(0, "10")
+        self.smartsweepvoltageend_entry.insert(0, "15")
         
         smartsweepvotagestep_label = tk.Label(master=frame_sweepconfig2, text = "Vstep [V]")
         smartsweepvotagestep_label.pack(side='left', padx='5', pady='5')
@@ -377,13 +407,51 @@ class Keithley_gui():
     
     
     
-        self.smartsweepbestaetigen_Button = tk.Button(master=frame_sweepconfig2, text = "Sweep beginnen", command=self.action_sweep)
+        self.smartsweepbestaetigen_Button = tk.Button(master=frame_sweepconfig2, text = "Sweep beginnen", state="disable",command=self.sweep_thread)
         self.smartsweepbestaetigen_Button.pack(side='left', padx='5', pady='5')
 
 
 
 
+
+
     def action_sweep(self):
+#        self.threadLock.acquire()
+                    
+        self.able_buttons("disconnect")
+        self.connect_button.config(state="disable")
+        self.port_box_refresh_button.config(state="disable")
+        
+        
+        
+        self.mylabel_frame = tk.Toplevel()
+        
+        
+        
+        sw = self.mylabel_frame.winfo_screenwidth()
+        sh = self.mylabel_frame.winfo_screenheight()
+        
+        rw = 500
+        rh = 50
+        
+        x = (sw-rw) / 2
+        y = (sh-rh) / 2
+        
+        self.mylabel_frame.geometry("%dx%d+%d+%d" %(rw,rh,x,y))
+
+        
+        top_label = tk.Label(self.mylabel_frame,text = "sweeping...")
+        top_label.pack(side='bottom', padx='5', pady='5')
+        
+
+#        self.mylabel = tk.Label(self.mylabel_frame, text='Running loop').pack()
+
+        self.p = ttk.Progressbar(self.mylabel_frame, orient=tk.HORIZONTAL, length=200,
+                             mode='indeterminate')
+        
+        self.p.pack()
+        self.p.start()
+        
         
         print("start write:")
         self.writereadbytes('reset()')
@@ -499,138 +567,207 @@ class Keithley_gui():
         
         self.writereadbytes("waitcomplete()")
 
-        
-    
-        #sleep(24)  #  睡觉时长要比变量个数十分之一多三秒 nplc=0.001
-                   #  睡觉时长要比变量个数十分之一多三秒 nplc=0.01！！！！！！！
-                   #  睡觉时长要比变量个数十分之一多四秒 nplc=0.1
-                   #  睡觉时长要比变量个数十分之一多12秒 nplc=1
-    
+
+
         while self.writereadbytes('') != "END":
+            
             sleep(1)
-            print("#", end = '')
+            print("#", end = '') 
     
     
-        received = self.writereadbytes("print(tostring(numberOfVals))")
+                   
+                   
+        self.nmax=320               # größte Anzahl aus der einmalig aufgerufenen readall Funktion
 
-        print('self.received:',received)
+        self.numberOfValues = self.writereadbytes("print(tostring(numberOfVals))")
+        self.numberOfValues = int(float(self.numberOfValues))
+        print("numberOfValues:",self.numberOfValues)
 
-        numberOfValues = int(float(received))        
-        print("numberOfValues:",numberOfValues)
-
-    
+        self.zykluszahl = self.numberOfValues/self.nmax
+        print("self.zykluszahl: ", self.zykluszahl)
+        if isinstance(self.zykluszahl,float):
+            self.zykluszahl = int(self.zykluszahl) + 1
+            print("self.zykluszahl: ", self.zykluszahl)
+            
         
         measureTime=float(self.writereadbytes("print(tostring(dt))"))                
         print("Zeit:",measureTime)        
         
     
-    
         self.t_array = []
-        time_1=self.writereadbytesall("printbuffer(1, tostring(numberOfVals/2), smua.nvbuffer1.timestamps)")
-        for item in time_1.split(','):
-            self.t_array.append(float(item))
+        for value in range(1, self.zykluszahl + 1):
+            print(value)
             
-    
-        
-        
-        time_2=self.writereadbytesall("printbuffer(tostring(1 + numberOfVals/2), tostring(numberOfVals), smua.nvbuffer1.timestamps)")
-        for item in time_2.split(','):
-            self.t_array.append(float(item))
-        
-        
-    
-    
-        
+            if (value == 1):
+                time_l = self.writereadbytesall("printbuffer(tostring(" + str(1) + ")" + ", tostring(" + str(int(value*(self.numberOfValues/self.zykluszahl))) + "), smua.nvbuffer1.timestamps)")
+            
+            elif (value == self.zykluszahl):
+                time_l = self.writereadbytesall("printbuffer(tostring(" + str( 1  + int((value-1)*(self.numberOfValues/self.zykluszahl))) + ")" + ", tostring(" + str(int(value*(self.numberOfValues/self.zykluszahl))) + "), smua.nvbuffer1.timestamps)")    
+          
+            else:
+                time_l = self.writereadbytesall("printbuffer(tostring(" + str( 1  + int((value-1)*(self.numberOfValues/self.zykluszahl))) + ")" + ", tostring(" + str(int(value*(self.numberOfValues/self.zykluszahl))) + "), smua.nvbuffer1.timestamps)")
+            print("time_l: ", time_l)
+            for item in time_l.split(','):
+                self.t_array.append(float(item))
+            
+            
         sleep(0.1)
         
         print(self.t_array)
+        
         timestamp = str(datetime.datetime.now()).split('.')[0]
     
         self.messaging(" > ".join([timestamp, "t_array"]), gui=True)  
         self.messaging(self.t_array, gui=True)
+
+    
     
     
         self.v_array = []
-        voltage_1=self.writereadbytesall("printbuffer(1, tostring(numberOfVals/2), smua.nvbuffer1.sourcevalues)")
-        for item in voltage_1.split(','):
-            self.v_array.append(float(item))
+        for value in range(1, self.zykluszahl + 1):
+            print(value)
             
-     
-        
-        
-        voltage_2=self.writereadbytesall("printbuffer(tostring(1 + numberOfVals/2), tostring(numberOfVals), smua.nvbuffer1.sourcevalues)")
-        for item in voltage_2.split(','):
-            self.v_array.append(float(item))
-        
-           
+            if (value == 1):
+                voltage_l = self.writereadbytesall("printbuffer(tostring(" + str(1) + ")" + ", tostring(" + str(int(value*(self.numberOfValues/self.zykluszahl))) + "), smua.nvbuffer1.sourcevalues)")
+            
+            elif (value == self.zykluszahl):
+                voltage_l = self.writereadbytesall("printbuffer(tostring(" + str( 1  + int((value-1)*(self.numberOfValues/self.zykluszahl))) + ")" + ", tostring(" + str(int(value*(self.numberOfValues/self.zykluszahl))) + "), smua.nvbuffer1.sourcevalues)")    
+          
+            else:
+                voltage_l = self.writereadbytesall("printbuffer(tostring(" + str( 1  + int((value-1)*(self.numberOfValues/self.zykluszahl))) + ")" + ", tostring(" + str(int(value*(self.numberOfValues/self.zykluszahl))) + "), smua.nvbuffer1.sourcevalues)")
+            print("time_l: ", voltage_l)
+            for item in voltage_l.split(','):
+                self.v_array.append(float(item))
+            
+            
         sleep(0.1)
         
         print(self.v_array)
-        timestamp = str(datetime.datetime.now()).split('.')[0] 
-        self.messaging(" > ".join([timestamp, "v_array"]), gui=True)
+        
+        timestamp = str(datetime.datetime.now()).split('.')[0]
+    
+        self.messaging(" > ".join([timestamp, "v_array"]), gui=True)  
         self.messaging(self.v_array, gui=True)
     
+
     
+    
+    
+    
+    
+    
+
         self.i_array = []
-        current_1=self.writereadbytesall("printbuffer(1, tostring(numberOfVals/2), smua.nvbuffer1.readings)")
-        
-        for item in current_1.split(','):
-            self.i_array.append(float(item))
+        for value in range(1, self.zykluszahl + 1):
+            print(value)
             
-     
-        
-        
-        current_2=self.writereadbytesall("printbuffer(tostring(1 + numberOfVals/2), tostring(numberOfVals), smua.nvbuffer1.readings)")
-        
-        for item in current_2.split(','):
-            self.i_array.append(float(item))
-        
-           
+            if (value == 1):
+                current_l = self.writereadbytesall("printbuffer(tostring(" + str(1) + ")" + ", tostring(" + str(int(value*(self.numberOfValues/self.zykluszahl))) + "), smua.nvbuffer1.readings)")
+            
+            elif (value == self.zykluszahl):
+                current_l = self.writereadbytesall("printbuffer(tostring(" + str( 1  + int((value-1)*(self.numberOfValues/self.zykluszahl))) + ")" + ", tostring(" + str(int(value*(self.numberOfValues/self.zykluszahl))) + "), smua.nvbuffer1.readings)")    
+          
+            else:
+                current_l = self.writereadbytesall("printbuffer(tostring(" + str( 1  + int((value-1)*(self.numberOfValues/self.zykluszahl))) + ")" + ", tostring(" + str(int(value*(self.numberOfValues/self.zykluszahl))) + "), smua.nvbuffer1.readings)")
+            print("current_l: ", current_l)
+            for item in current_l.split(','):
+                self.i_array.append(float(item))
+            
+            
         sleep(0.1)
         
         print(self.i_array)
-        timestamp = str(datetime.datetime.now()).split('.')[0] 
+        
+        timestamp = str(datetime.datetime.now()).split('.')[0]
+    
         self.messaging(" > ".join([timestamp, "i_array"]), gui=True)  
-        self.messaging( self.i_array, gui=True)
+        self.messaging(self.i_array, gui=True)
     
-    
-        filename = self.make_filename()
-    
-        self.csv_speichern(filename)
+   
+
+
+
+
+        self.make_filename()
+        
+        self.filenames.append(self.filename)
+        
+        self.csv_speichern()
         self.messaging(str(datetime.datetime.now()).split('.')[0] + " done smart_sweep_current ", gui=True, cli=True)
 
+        self.get_Rsh_Mpp()
+        self.Mpps.append(self.mpp)
 
 
+        #print(threading.active_count(),'active_count()')
 
+        df_2 = pd.DataFrame({'Mpp':self.Mpps,'filename':self.filenames})
+        df_2.to_csv('MPP.csv',sep=',',index=0)
+        
+        
+        self.able_buttons("connect")
+        
+        self.mylabel_frame.destroy()
+#        self.threadLock.release()
+        
+        
+    def sweep_thread(self):
+        '''
+        Spawn a new thread for running long loops in background
+        '''
+#        self.threadLock = threading.Lock()
+#        self.threads = []
+        
+#        self.mylabel_frame = tk.Toplevel()
+#        self.mylabel = tk.Label(self.mylabel_frame, text='Running loop').pack()
+#        self.thread_queue = queue.Queue()
+        #print(threading.active_count(),'active_count()_Beginn')
+        self.new_thread =threading.Thread(target=self.action_sweep)
+        self.new_thread.setDaemon(True)
+        self.new_thread.start()
+        #print(threading.active_count(),'active_count()_Ende')
+
+#        self.mylabel_frame = tk.Toplevel()
+#        self.mylabel = tk.Label(self.mylabel_frame, text='Running loop').pack()
+#
+
+#
+#        self.mylabel_frame.after(100, self.listen_for_result)
+        
+        
+        
+        
+        
+    def listen_for_result(self):
+
+        try:
+            self.res = self.thread_queue.get(0)
+#            self.mylabel.config(text='Loop terminated')
+        except queue.Empty:
+            self.mylabel_frame.after(100, self.listen_for_result)
+        
+        
+        
 
     def make_filename(self):
-        filename = self.ivfilename_entry.get()
+        self.filename = self.ivfilename_entry.get()
+        self.filename = self.filename.replace("&y", time.strftime('%y'))
+        self.filename = self.filename.replace("&Y", time.strftime('%Y'))
+        self.filename = self.filename.replace("&m", time.strftime('%m'))
+        self.filename = self.filename.replace("&d", time.strftime('%d'))
+        self.filename = self.filename.replace("&H", time.strftime('%H'))
+        self.filename = self.filename.replace("&M", time.strftime('%M'))
+        self.filename = self.filename.replace("&S", time.strftime('%S'))
 
 
-        filename = filename.replace("&y", time.strftime('%y'))
-        filename = filename.replace("&Y", time.strftime('%Y'))
-        filename = filename.replace("&m", time.strftime('%m'))
-        filename = filename.replace("&d", time.strftime('%d'))
-        filename = filename.replace("&H", time.strftime('%H'))
-        filename = filename.replace("&M", time.strftime('%M'))
-        filename = filename.replace("&S", time.strftime('%S'))
-    
-        return filename
-
-
-
-
-
-
-
-    def csv_speichern(self, filename):
+    def csv_speichern(self):
     
         df_1 = pd.DataFrame({'time':self.t_array,'voltages':self.v_array,'currents':self.i_array})
         print(df_1)
-        df_1.to_csv(filename + '.csv',sep=',',index=0)
+        df_1.to_csv(self.filename + '.csv',sep=',',index=0)
     
     
-        with open(filename + '.csv', 'r+', encoding = 'utf-8') as f:
+        with open(self.filename + '.csv', 'r+', encoding = 'utf-8') as f:
             content = f.read()        
             f.seek(0, 0)
             
@@ -638,6 +775,155 @@ class Keithley_gui():
             f.write(content)
 
         f.close()
+
+
+
+
+
+    def get_Rsh_Mpp(self):
+
+
+        plt.title("I-V_Kennlinie",fontsize = 6)
+        plt.xlabel("spannnung [V]", fontsize = 10)
+        plt.ylabel("current [A]", fontsize = 10, verticalalignment='top',horizontalalignment='center')                                                                              
+        
+        
+        
+        files = sorted(glob.glob(self.filename + ".csv"))     #list of files
+        print("processin raw files")
+        
+
+        for file in files:
+
+            filename = basename(file).rsplit('.', 1)[0]      # each file in list of files                                                     
+            print('\r'+ filename + "  ", flush = True)     # progress information
+            
+            
+            
+            with open(file) as f:    #'with' will auto close after loop
+                #ax1.plot(121)
+        
+                csvreader = csv.reader(f, delimiter = ",", quotechar='"')     #read into csv object
+        
+                for line in range(2):      #skip header                             
+                    next (csvreader)                                                                            
+                voltage = []        #init lists      
+                current = [] 
+                power= []
+                for row in csvreader:
+                    voltage.append(float(row[1]))      #process each row
+                    current.append(float(row[2]))        #extract column 
+                    power.append(float(row[1])*(float(row[2])-float(self.smartsweepshortcircutcurrent_entry.get()))) # 9 = Isc for Pseudo MPP
+                        
+        
+                plt.plot(voltage, current, 'b', label=filename)
+                #plt.plot(voltage, power, 'k.--', label=filename)
+                plt.legend(loc=2,fontsize=3)
+                print("power: ", power)
+            
+            
+            self.mpp=np.min(power)
+            u2=0.5
+            u1=0
+            
+            u_2 = np.linspace(u2,u2,len(current))     # Isc auf dem Diagramm anzeigen
+            u_1 = np.linspace(u1,u1,len(current))
+            
+        
+            
+            i_dx2 = (np.argwhere(np.diff(np.sign(u_2 - voltage))).flatten())[-1]
+#            print("i_dx2", i_dx2)
+            
+            #sign()是Python的Numpy中的取数字符号（数字前的正负号）的函数。
+            #np.diff函数总结下就是每行的后一个值减去前一个，然后放到一个新的数组里面
+            # np.argwhere( a )
+            #返回非 0的数组元组的索引，其中a是要索引数组的条件。entsprchende X-wert einsammeln
+            #a.flatten()：a是个数组，a.flatten()就是把a降到一维，默认是按行的方向降 。
+            #Find the indices of array elements that are non-zero, grouped by element.
+#            n=0
+#            summ_2=0
+#            summ_1=0
+#            for i in i_dx2:
+#                summ_2= summ_2 + i
+#                n=n+1
+#            i_dx2=summ_2/n
+#            i_dx2=int(i_dx2)
+
+            i_dx1 = (np.argwhere(np.diff(np.sign(u_1 - voltage))).flatten())[0] # wenn u_1 = 0 ist<!!!!
+#            print("i_dx1", i_dx1)
+            
+            # entsprchende X-wert einsammeln
+#            for i in i_dx1:
+#                summ_1= summ_1 + i
+#                n=n+1
+#            i_dx1=summ_1/n
+#            i_dx1=int(i_dx1)
+            
+             
+            
+            
+            
+            
+            print("i_dx2", i_dx2)
+            print("i_dx1", i_dx1)
+            
+            
+            print("idx_2:", np.int(i_dx2))
+            print("idx_1:", np.int(i_dx1))
+
+
+            i2=float(np.array(current,dtype=np.float)[i_dx2])
+            print("current_2: ",i2)
+            i1=float(np.array(current,dtype=np.float)[i_dx1])
+            print("current_1:", i1)
+            
+            i_2 = np.linspace(i2,i2,len(voltage))     # Isc auf dem Diagramm anzeigen
+            i_1 = np.linspace(i1,i1,len(voltage))        
+            
+            
+            
+            
+            u2=float(np.array(voltage,dtype=np.float)[i_dx2])
+            u1=float(np.array(voltage,dtype=np.float)[i_dx1])
+            print("voltage_2:",u2)
+            print("voltage_1:",u1)
+            
+            
+            
+            plt.plot(u_2,current, label= filename)   #actual plot
+            plt.plot(u_1,current, label= filename)   #actual plot
+            
+            
+            plt.plot(voltage,i_2 , label= filename)   #actual plot
+            plt.plot(voltage,i_1 , label= filename)   #actual plot
+            
+        
+            
+            
+            plt.plot(np.array(voltage,dtype=np.float)[i_dx2], np.array(current,dtype=np.float)[i_dx2], 'ro')  # kritische Punkte  auf dem Diagramm anzeigen          
+            plt.plot(np.array(voltage,dtype=np.float)[i_dx1], np.array(current,dtype=np.float)[i_dx1], 'ro')  # kritische Punkte  auf dem Diagramm anzeigen  
+            
+            
+            
+        r_sh=(u2 - u1)/(i2 - i1)
+
+
+        
+        print("Rsh:", r_sh)
+        print("Mpp:", self.mpp*(-1))  
+        i_dxu = (np.argwhere(np.diff(np.sign(np.linspace(self.mpp,self.mpp,len(power)) - power))).flatten())[-1]
+        print("i_dxu: ", i_dxu)  
+        i_dxu=int(i_dxu)
+
+        
+        print("i_dxu", i_dxu)
+ 
+        
+        plt.plot(np.array(voltage,dtype=np.float)[i_dxu], np.array(current,dtype=np.float)[i_dxu], 'ro')  # kritische Punkte  auf dem Diagramm anzeigen
+        
+        plt.savefig(filename + ".png", dpi = 300)    #save plot as file
+        plt.show()       #present plot 
+
 
 
 
@@ -663,13 +949,13 @@ class Keithley_gui():
     
         self.starttimer_entry = tk.Entry(master=frame_starttimer, width=18)
         self.starttimer_entry.pack(side='left', padx='5', pady='5')
-        self.starttimer_entry.insert(0, (datetime.datetime.now()+datetime.timedelta(seconds = 20)).strftime('%Y-%m-%d %H:%M:%S'))
+        self.starttimer_entry.insert(0, (datetime.datetime.now()+datetime.timedelta(seconds = 5)).strftime('%Y-%m-%d %H:%M:%S'))
         starttimerduration_label = tk.Label(master=frame_starttimer, text = "duration")
         starttimerduration_label.pack(side='left', padx='5', pady='5')
     
         self.starttimerduration_entry = tk.Entry(master=frame_starttimer, width=10)
         self.starttimerduration_entry.pack(side='left', padx='5', pady='5')
-        self.starttimerduration_entry.insert(0, "168:00:00")
+        self.starttimerduration_entry.insert(0, "00:10:00")
         
         starttimerendtxt_label = tk.Label(master=frame_starttimer, text = "ending at")
         starttimerendtxt_label.pack(side='left', padx='5', pady='5')
@@ -691,7 +977,8 @@ class Keithley_gui():
     
         self.dosweep_entry = tk.Entry(master=frame_autosweep, width=10)
         self.dosweep_entry.pack(side='left', padx='5', pady='5')
-        self.dosweep_entry.insert(0, "00:05:00")
+        self.dosweep_entry.insert(0, "00:02:00")
+        
         dosweepnext_label = tk.Label(master=frame_autosweep, text='next ')
         dosweepnext_label.pack(side='left', padx='5', pady='5')
     
@@ -699,6 +986,13 @@ class Keithley_gui():
         self.dosweepnext_entry.pack(side='left', padx='5', pady='5')
         self.dosweepnext_entry.insert(0, self.starttimer_entry.get())
         self.dosweepnext_entry.config(state="disable")
+        
+        MPP_file_label = tk.Label(master=frame_autosweep, text='MPP_file')
+        MPP_file_label.pack(side='left', padx='5', pady='5')
+    
+        self.MPP_file_entry = tk.Entry(master=frame_autosweep, width=35)
+        self.MPP_file_entry.pack(side='left', padx='5', pady='5')
+        self.MPP_file_entry.insert(0, "MPP.csv")
 
 
 
@@ -747,6 +1041,7 @@ class Keithley_gui():
 
 
     def action_startbutton(self):
+        self.send_button.config(state="disable")
         self.starttimer_button.config(state="disable")
         self.starttimer_button.config(text="waiting")
         self.stoptimer_button.config(state="normal")
@@ -754,7 +1049,7 @@ class Keithley_gui():
         self.starttimerduration_entry.config(state="disable")
         self.dosweepnext_entry.config(state="disable")
         self.dosweep_entry.config(state="disable")
-        
+        self.port_box_refresh_button.config(state="disable")
         self.messaging("waiting for timer at " + str(self.starttimer_entry.get()), cli=True, gui=True)
     
         '''
@@ -768,13 +1063,15 @@ class Keithley_gui():
     
     
     def action_stopbutton(self):
+        self.send_button.config(state="normal")
         self.starttimer_button.config(state="normal")
         self.stoptimer_button.config(state="disable")
         self.starttimer_entry.config(state="normal")
         self.starttimerduration_entry.config(state="normal")
         self.dosweepnext_entry.config(state="normal")
         self.dosweep_entry.config(state="normal")
-    
+        self.smartsweepbestaetigen_Button.config(state="normal")
+        self.disconnect_button.config(state="normal")
         
         self.messaging("timer stopped at " + time.strftime('%Y-%m-%d %H:%M:%S'), cli=True, gui=True)
     #    if starttimer_button.cget('text') == "testing":
@@ -791,6 +1088,7 @@ class Keithley_gui():
         self.starttimer_entry.config(state="disable")
         self.starttimerduration_entry.config(state="disable")
         self.messaging("start test at " + str(self.starttimer_entry.get()), cli=True, gui=True)
+        self.smartsweepbestaetigen_Button.config(state="disable")
     #    action_setv()
     #    action_seti()
     #    globalswitch(True)
@@ -839,7 +1137,7 @@ class Keithley_gui():
     
     def gui_status(self):
         frame_status = tk.Frame(self.parent, bd = 3, relief = 'groove')
-        frame_status.pack(side='bottom', fill='x')   # status frame
+        frame_status.pack(side='top', fill='x')   # status frame
         # status frame
 
         self.status_label = tk.Label(master=frame_status, text = "status")
@@ -850,7 +1148,7 @@ class Keithley_gui():
 
 
     def tick(self):
-        
+
         # refresh gui and inputs, also watch for triggers
         self.status_label.config(text=time.strftime('%Y-%m-%d %H:%M:%S'))
         #[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[1-2][0-9]|3[0-1]) (2[0-3]|[01][0-9]):[0-5][0-9]
@@ -876,44 +1174,27 @@ class Keithley_gui():
     
         if self.starttimer_button.cget('text') == "testing":
             
-            # sweep is triggered
+#            self.able_buttons("disconnect")
+#            self.connect_button.config(state="disable")
             if self.dosweep_var.get():
                 if self.updatenext(self.dosweepnext_entry, self.dosweep_entry.get()):
                     self.messaging("sweep triggered at " + str(datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')), cli=True, gui=True)
-                    self.action_sweep()
+#                    self.action_startbutton()
+                    self.sweep_thread()
+                else:
+                    self.able_buttons("disconnect")
+                    self.connect_button.config(state="disable")
+                    self.port_box_refresh_button.config(state="disable")
+                    
+#                    df_2 = pd.DataFrame({'Mpp':self.Mpps,'filename':self.filenames})
+#                    df_2.to_csv('MPP.csv',sep=',',index=0)
      
             
             pass
             if datetime.datetime.strptime(str(self.starttimerending_entry.get()), '%Y-%m-%d %H:%M:%S') < datetime.datetime.now():
                 self.action_stopbutton() # stop when test duration is over
-    
-    
-    
-        self.checkvalid(self.dosweep_entry, re_timestamp)
-    
-    
-        self.checkValidRange(self.smartsweepvoltageend_entry, re_float, 0, 10)
-        self.checkValidRange(self.smartsweepvotagestart_entry, re_float, 0, 10)
-    
-        self.checkValidRange(self.smartsweepvotagestep_entry, re_float, 0, 1)
-    
+ 
         
-        self.checkValidRange(self.smartsweepvoltagerange_entry, re_float,0, 15)
-    
-    
-        self.checkValidRange(self.smartsweepcurrentrange_entry, re_float,0, 10)
-    
-        self.checkValidRange(self.smartsweepcurrentlimit_entry, re_float,0, 10)
-    
-        self.checkValidRange(self.smartsweepcurrentrange_entry, re_float,0, 10)
-        self.checkValidRange(self.smartsweepnplc_entry, re_float,0, 1)
-    
-    
-    
-    
-    
-    
-    
         if self.starttimer_button.cget('text') == "waiting":
             if datetime.datetime.strptime(str(self.starttimer_entry.get()), '%Y-%m-%d %H:%M:%S') < datetime.datetime.now():
     
@@ -922,10 +1203,46 @@ class Keithley_gui():
         root.after(200, self.tick)
 
 
+    def gui_check_valid(self):
+
+
+        self.checkvalid(self.dosweep_entry, re_timestamp)
+    
+    
+        self.checkValidRange(self.smartsweepvoltageend_entry, re_float, 0, 40)
+        self.checkValidRange(self.smartsweepvotagestart_entry, re_float, 0, 40)
+    
+        self.checkValidRange(self.smartsweepvotagestep_entry, re_float, 0, 1)
+    
+        
+        self.checkValidRange(self.smartsweepvoltagerange_entry, re_float,0, 40)
+    
+        self.checkValidRange(self.smartsweepcurrentrange_entry, re_float,0, 10)
+    
+        self.checkValidRange(self.smartsweepcurrentlimit_entry, re_float,0, 10)
+        
+        self.checkValidRange(self.smartsweepshortcircutcurrent_entry, re_float,0, 50)
+        
+        self.checkValidRange(self.smartsweepnplc_entry, re_float,0, 1)
 
 
 
+
+    
 root = tk.Tk()
+
+sw = root.winfo_screenwidth()
+sh = root.winfo_screenheight()
+
+rw = 1000
+rh = 650
+
+x = (sw-rw) / 2
+y = (sh-rh) / 2
+
+root.geometry("%dx%d+%d+%d" %(rw,rh,x,y))
+
+
 
 def main(): 
     
@@ -937,8 +1254,8 @@ def main():
     my_keithly.gui_automation()
     my_keithly.gui_listbox()
     my_keithly.gui_status()
+    my_keithly.gui_check_valid()
     my_keithly.tick()
-    
     root.mainloop()
 
 
